@@ -5,6 +5,8 @@ On any given regular day, the threat detected by a security personnel is very ra
 
 ![image](https://github.com/user-attachments/assets/66a679d9-4ae0-454a-aef8-1a956660bdcf)
 ![Screenshot from 2024-11-28 08-10-28](https://github.com/user-attachments/assets/47ec69da-9689-4cef-bb01-c160d52e567a)
+![image](https://github.com/user-attachments/assets/4214973c-bb51-429b-8f3c-3b673a1080d7)
+
 
 ## Model for Object Classification and Dangerous Object Detection
 
