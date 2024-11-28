@@ -207,3 +207,541 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+## Model for Dangerous Sound Detection(Gun shots)
+
+```python
+import os
+
+# Define the directory name
+directory_name = "audio_samples"
+
+# Create the directory if it doesn't exist
+if not os.path.exists(directory_name):
+    os.makedirs(directory_name)
+    print(f"Directory '{directory_name}' created successfully.")
+else:
+    print(f"Directory '{directory_name}' already exists.")
+
+
+
+
+# Directory containing the files
+directory = "audio_samples"
+
+# Create a dictionary to store the labels
+labels = {}
+
+# Iterate over the files in the directory
+for filename in os.listdir(directory):
+    # Assign label 1 to each file
+    if(filename[0]=="3"):
+    # print(type(filename[0]))
+      labels[filename] = 1
+    else:
+      labels[filename] = 0
+
+# Print the labels (optional)
+print(labels)
+
+
+import os
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchaudio
+import torchaudio.transforms as T
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+!pip install tensorflow
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+class AudioDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = torch.FloatTensor(features)
+        self.labels = torch.LongTensor(labels)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx]
+
+class GunshotAudioCNN(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(GunshotAudioCNN, self).__init__()
+
+        self.features = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=3, padding=1),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1)
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(64, num_classes)
+        )
+
+    def forward(self, x):
+        x = x.unsqueeze(1)
+        features = self.features(x)
+        features = features.squeeze(-1)
+        output = self.classifier(features)
+        return output
+
+class GunshotAudioRecognizer:
+    def __init__(self, audio_dir, sample_rate=22050, duration=2):
+        self.audio_dir = audio_dir
+        self.sample_rate = sample_rate
+        self.duration = duration
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = None
+        self.label_encoder = LabelEncoder()
+    def predict(self, audio_file_path):
+        """
+        Predicts the label for a given audio file.
+
+        Args:
+            audio_file_path (str): Path to the audio file.
+
+        Returns:
+            str: Predicted label ("Weapon" or "Unknown").
+        """
+        if self.model is None:
+            raise ValueError("Model not trained yet. Call 'train' method first.")
+
+        # Extract features from the audio file
+        features = self.extract_features(audio_file_path)
+        features = torch.FloatTensor(features).unsqueeze(0).to(self.device)  # Add batch dimension and move to device
+
+        # Make prediction
+        self.model.eval()  # Set model to evaluation mode
+        with torch.no_grad():
+            output = self.model(features)
+            _, predicted_idx = torch.max(output, 1)
+            predicted_label = self.label_encoder.inverse_transform([predicted_idx.item()])[0]
+
+        return predicted_label
+
+# # Example usage:
+# recognizer = GunshotAudioRecognizer('/content/audio_samples')
+# history = recognizer.train()
+
+# Predict on a new audio file
+
+    def extract_features(self, file_path):
+            waveform, sr = torchaudio.load(file_path)
+
+            if sr != self.sample_rate:
+              resampler = T.Resample(sr, self.sample_rate)
+              waveform = resampler(waveform)
+
+              target_length = self.sample_rate * self.duration
+            if waveform.shape[1] > target_length:
+                waveform = waveform[:, :target_length]
+            else:
+              padding = target_length - waveform.shape[1]
+              waveform = torch.nn.functional.pad(waveform, (0, padding))
+
+            mfcc_transform = T.MFCC(
+            sample_rate=self.sample_rate,
+            n_mfcc=13,
+            melkwargs={'n_fft': 400, 'hop_length': 160}
+        )
+            mfccs = mfcc_transform(waveform)
+            return mfccs.mean(dim=2).numpy().flatten()
+
+    def prepare_dataset(self):
+        features = []
+        labels = []
+        for audio_file in os.listdir(self.audio_dir):
+          if os.path.isfile(os.path.join(self.audio_dir, audio_file)) and not audio_file.startswith('.'):
+              file_path = os.path.join(self.audio_dir, audio_file)
+              # print(audio_file[0])
+                    # Extract features
+              feature = self.extract_features(file_path)
+              features.append(feature)
+              if(audio_file[0]=="3"):
+                labels.append("Weapon")
+              else:
+                labels.append("Unknown")
+
+        if not features or not labels:
+            return None, None
+        features=pad_sequences(features,dtype='float32',padding='post')
+        features = np.array(features)
+        labels = self.label_encoder.fit_transform(labels)
+
+        return features, labels
+    def train(self, test_size=0.2, batch_size=32, epochs=100, learning_rate=0.001):
+        features, labels = self.prepare_dataset()
+
+        if features is None or labels is None:
+            print("Error: No data found in the specified directory.")
+            return
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            features, labels,
+            test_size=test_size,
+            random_state=42
+        )
+
+        train_dataset = AudioDataset(X_train, y_train)
+        test_dataset = AudioDataset(X_test, y_test)
+
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size)
+
+        num_classes = len(np.unique(labels))
+        self.model = GunshotAudioCNN(input_size=features.shape[1], num_classes=num_classes)
+        self.model = self.model.to(self.device)
+
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
+        train_losses, test_losses = [], []
+        train_accuracies, test_accuracies = [], []
+
+        for epoch in range(epochs):
+            self.model.train()
+            train_loss, train_correct, train_total = 0, 0, 0
+
+            for batch_features, batch_labels in train_loader:
+                batch_features = batch_features.to(self.device)
+                batch_labels = batch_labels.to(self.device)
+
+                optimizer.zero_grad()
+                outputs = self.model(batch_features)
+                loss = criterion(outputs, batch_labels)
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                train_total += batch_labels.size(0)
+                train_correct += (predicted == batch_labels).sum().item()
+
+            self.model.eval()
+            test_loss, test_correct, test_total = 0, 0, 0
+
+            with torch.no_grad():
+                for batch_features, batch_labels in test_loader:
+                    batch_features = batch_features.to(self.device)
+                    batch_labels = batch_labels.to(self.device)
+
+                    outputs = self.model(batch_features)
+                    loss = criterion(outputs, batch_labels)
+
+                    test_loss += loss.item()
+                    _, predicted = torch.max(outputs.data, 1)
+                    test_total += batch_labels.size(0)
+                    test_correct += (predicted == batch_labels).sum().item()
+
+            train_losses.append(train_loss / len(train_loader))
+            test_losses.append(test_loss / len(test_loader))
+            train_accuracies.append(100 * train_correct / train_total)
+            test_accuracies.append(100 * test_correct / test_total)
+
+            print(f'Epoch [{epoch+1}/{epochs}]')
+            print(f'Train Loss: {train_losses[-1]:.4f}, Train Accuracy: {train_accuracies[-1]:.2f}%')
+            print(f'Test Loss: {test_losses[-1]:.4f}, Test Accuracy: {test_accuracies[-1]:.2f}%')
+
+        return {
+            'train_loss': train_losses,
+            'test_loss': test_losses,
+            'train_accuracy': train_accuracies,
+            'test_accuracy': test_accuracies
+        }
+    def save_model(self, model_path):
+        """
+        Saves the trained model to a file.
+
+        Args:
+            model_path (str): Path to save the model file.
+        """
+        if self.model is None:
+            raise ValueError("Model not trained yet. Call 'train' method first.")
+
+        torch.save(self.model.state_dict(), model_path)
+        print(f"Model saved to: {model_path}")
+
+    def load_model(self, model_path):
+        """
+        Loads a trained model from a file.
+
+        Args:
+            model_path (str): Path to the saved model file.
+        """
+        num_classes = len(self.label_encoder.classes_)  # Get num_classes from label_encoder
+        input_size = 13 #Assuming mfcc features of length 13
+        self.model = GunshotAudioCNN(input_size=input_size, num_classes=num_classes)  # Create a new model instance
+        self.model.load_state_dict(torch.load(model_path))
+        self.model.to(self.device)
+        print(f"Model loaded from: {model_path}")
+
+# Example usage
+recognizer = GunshotAudioRecognizer('/content/audio_samples')
+history = recognizer.train()
+new_audio_file = '/content/audio_samples/3 (90).wav'  # Replace with the actual path
+prediction = recognizer.predict(new_audio_file)
+print(prediction)
+
+
+
+
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchaudio
+import torchaudio.transforms as T
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+import pickle  # Importing pickle to save/load LabelEncoder
+
+class GunshotAudioRecognizer:
+    def __init__(self, audio_dir, model_path='gunshot_model.pth', label_encoder_path='label_encoder.pkl', sample_rate=22050, duration=2):
+        self.audio_dir = audio_dir
+        self.sample_rate = sample_rate
+        self.duration = duration
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = None
+        self.label_encoder = LabelEncoder()
+        self.model_path = model_path  # Path to save/load model weights
+        self.label_encoder_path = label_encoder_path  # Path to save/load LabelEncoder
+
+        # Try loading the pre-trained model and LabelEncoder if they exist
+        if os.path.exists(self.model_path) and os.path.exists(self.label_encoder_path):
+            print("Loading pre-trained model and LabelEncoder...")
+            self.load_model(self.model_path)
+            self.load_label_encoder(self.label_encoder_path)
+        else:
+            print("No pre-trained model or LabelEncoder found. Proceeding with training.")
+            self.model = None  # Ensure the model is None until training
+
+    def predict(self, audio_file_path):
+        """
+        Predicts the label for a given audio file.
+
+        Args:
+            audio_file_path (str): Path to the audio file.
+
+        Returns:
+            str: Predicted label ("Weapon" or "Unknown").
+        """
+        if self.model is None:
+            raise ValueError("Model not trained yet. Call 'train' method first.")
+
+        # Extract features from the audio file
+        features = self.extract_features(audio_file_path)
+        features = torch.FloatTensor(features).unsqueeze(0).to(self.device)  # Add batch dimension and move to device
+
+        # Make prediction
+        self.model.eval()  # Set model to evaluation mode
+        with torch.no_grad():
+            output = self.model(features)
+            _, predicted_idx = torch.max(output, 1)
+            predicted_label = self.label_encoder.inverse_transform([predicted_idx.item()])[0]
+
+        return predicted_label
+
+    def extract_features(self, file_path):
+        waveform, sr = torchaudio.load(file_path)
+
+        if sr != self.sample_rate:
+            resampler = T.Resample(sr, self.sample_rate)
+            waveform = resampler(waveform)
+
+        target_length = self.sample_rate * self.duration
+        if waveform.shape[1] > target_length:
+            waveform = waveform[:, :target_length]
+        else:
+            padding = target_length - waveform.shape[1]
+            waveform = torch.nn.functional.pad(waveform, (0, padding))
+
+        mfcc_transform = T.MFCC(
+            sample_rate=self.sample_rate,
+            n_mfcc=13,
+            melkwargs={'n_fft': 400, 'hop_length': 160}
+        )
+        mfccs = mfcc_transform(waveform)
+        return mfccs.mean(dim=2).numpy().flatten()
+
+    def prepare_dataset(self):
+        features = []
+        labels = []
+        for audio_file in os.listdir(self.audio_dir):
+            if os.path.isfile(os.path.join(self.audio_dir, audio_file)) and not audio_file.startswith('.'):
+                file_path = os.path.join(self.audio_dir, audio_file)
+                # Extract features
+                feature = self.extract_features(file_path)
+                features.append(feature)
+                if audio_file[0] == "3":
+                    labels.append("Weapon")
+                else:
+                    labels.append("Unknown")
+
+        if not features or not labels:
+            return None, None
+        features = pad_sequences(features, dtype='float32', padding='post')
+        features = np.array(features)
+        labels = self.label_encoder.fit_transform(labels)
+
+        return features, labels
+
+    def train(self, test_size=0.2, batch_size=32, epochs=100, learning_rate=0.001):
+        features, labels = self.prepare_dataset()
+
+        if features is None or labels is None:
+            print("Error: No data found in the specified directory.")
+            return
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            features, labels,
+            test_size=test_size,
+            random_state=42
+        )
+
+        train_dataset = AudioDataset(X_train, y_train)
+        test_dataset = AudioDataset(X_test, y_test)
+
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size)
+
+        num_classes = len(np.unique(labels))
+        self.model = GunshotAudioCNN(input_size=features.shape[1], num_classes=num_classes)
+        self.model = self.model.to(self.device)
+
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+
+        train_losses, test_losses = [], []
+        train_accuracies, test_accuracies = [], []
+
+        for epoch in range(epochs):
+            self.model.train()
+            train_loss, train_correct, train_total = 0, 0, 0
+
+            for batch_features, batch_labels in train_loader:
+                batch_features = batch_features.to(self.device)
+                batch_labels = batch_labels.to(self.device)
+
+                optimizer.zero_grad()
+                outputs = self.model(batch_features)
+                loss = criterion(outputs, batch_labels)
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                train_total += batch_labels.size(0)
+                train_correct += (predicted == batch_labels).sum().item()
+
+            self.model.eval()
+            test_loss, test_correct, test_total = 0, 0, 0
+
+            with torch.no_grad():
+                for batch_features, batch_labels in test_loader:
+                    batch_features = batch_features.to(self.device)
+                    batch_labels = batch_labels.to(self.device)
+
+                    outputs = self.model(batch_features)
+                    loss = criterion(outputs, batch_labels)
+
+                    test_loss += loss.item()
+                    _, predicted = torch.max(outputs.data, 1)
+                    test_total += batch_labels.size(0)
+                    test_correct += (predicted == batch_labels).sum().item()
+
+            train_losses.append(train_loss / len(train_loader))
+            test_losses.append(test_loss / len(test_loader))
+            train_accuracies.append(100 * train_correct / train_total)
+            test_accuracies.append(100 * test_correct / test_total)
+
+            print(f'Epoch [{epoch+1}/{epochs}]')
+            print(f'Train Loss: {train_losses[-1]:.4f}, Train Accuracy: {train_accuracies[-1]:.2f}%')
+            print(f'Test Loss: {test_losses[-1]:.4f}, Test Accuracy: {test_accuracies[-1]:.2f}%')
+
+        # Save the model and LabelEncoder after training
+        self.save_model(self.model_path)
+        self.save_label_encoder(self.label_encoder_path)
+
+        return {
+            'train_loss': train_losses,
+            'test_loss': test_losses,
+            'train_accuracy': train_accuracies,
+            'test_accuracy': test_accuracies
+        }
+
+    def save_model(self, model_path):
+        """
+        Saves the trained model to a file.
+
+        Args:
+            model_path (str): Path to save the model file.
+        """
+        if self.model is None:
+            raise ValueError("Model not trained yet. Call 'train' method first.")
+
+        torch.save(self.model.state_dict(), model_path)
+        print(f"Model saved to: {model_path}")
+
+    def save_label_encoder(self, label_encoder_path):
+        """
+        Saves the trained LabelEncoder to a file.
+
+        Args:
+            label_encoder_path (str): Path to save the LabelEncoder.
+        """
+        with open(label_encoder_path, 'wb') as f:
+            pickle.dump(self.label_encoder, f)
+        print(f"LabelEncoder saved to: {label_encoder_path}")
+
+    def load_model(self, model_path):
+        """
+        Loads a trained model from a file.
+
+        Args:
+            model_path (str): Path to the saved model file.
+        """
+        num_classes = len(self.label_encoder.classes_)  # Get num_classes from label_encoder
+        input_size = 13  # Assuming mfcc features of length 13
+        self.model = GunshotAudioCNN(input_size=input_size, num_classes=num_classes)  # Create a new model instance
+        self.model.load_state_dict(torch.load(model_path))
+        self.model.to(self.device)
+        print(f"Model loaded from: {model_path}")
+
+    def load_label_encoder(self, label_encoder_path):
+        """
+        Loads the saved LabelEncoder from a file.
+
+        Args:
+            label_encoder_path (str): Path to the saved LabelEncoder.
+        """
+        with open(label_encoder_path, 'rb') as f:
+            self.label_encoder = pickle.load(f)
+        print(f"LabelEncoder loaded from: {label_encoder_path}")
+
+# Example usage
+recognizer = GunshotAudioRecognizer('/content/audio_samples')
+history = recognizer.train()  # Train only if the model doesn't exist yet
+new_audio_file = '/content/audio_samples/3 (90).wav'  # Replace with the actual path
+prediction = recognizer.predict(new_audio_file)
+print(prediction)
+```
